@@ -119,7 +119,8 @@ export function SalesReport() {
 
       if (salesError) {
         console.error("Sales query error:", salesError)
-        alert(`Error loading sales: ${salesError.message}`)
+        const errorMsg = salesError?.message || JSON.stringify(salesError)
+        alert(`Error loading sales: ${errorMsg}`)
         setIsLoading(false)
         return
       }
@@ -127,11 +128,15 @@ export function SalesReport() {
       // Debug: Check what store_ids actually exist in sales for this date range
       if (storeFilter && storeFilter !== "all" && (!sales || sales.length === 0)) {
         // Query all sales in date range to see what store_ids exist
-        const { data: allSalesInRange } = await supabase
+        const { data: allSalesInRange, error: allSalesError } = await supabase
           .from("sales")
           .select("id, store_id, sale_date, created_by")
           .gte("sale_date", `${startDate}T00:00:00`)
           .lte("sale_date", `${endDate}T23:59:59`)
+        
+        if (allSalesError) {
+          console.error("Debug - all sales query error:", allSalesError)
+        }
         
         const uniqueStoreIds = [...new Set(allSalesInRange?.map((s: any) => s.store_id).filter((id: any) => id !== null && id !== undefined) || [])]
         const nullStoreIdCount = allSalesInRange?.filter((s: any) => s.store_id === null || s.store_id === undefined).length || 0
@@ -159,10 +164,14 @@ export function SalesReport() {
           
           if (creatorIds.length > 0) {
             // Get store_id for each creator from profiles
-            const { data: profiles } = await supabase
+            const { data: profiles, error: profilesError } = await supabase
               .from("profiles")
               .select("id, store_id")
               .in("id", creatorIds)
+            
+            if (profilesError) {
+              console.error("Debug - profiles query error:", profilesError)
+            }
             
             // Create a map of creator_id -> store_id
             const creatorStoreMap = new Map()
@@ -173,13 +182,17 @@ export function SalesReport() {
             })
             
             // Get default store if creator doesn't have a store
-            const { data: defaultStore } = await supabase
+            const { data: defaultStore, error: defaultStoreError } = await supabase
               .from("stores")
               .select("id")
               .eq("is_active", true)
               .order("created_at", { ascending: true })
               .limit(1)
               .single()
+            
+            if (defaultStoreError) {
+              console.error("Debug - default store query error:", defaultStoreError)
+            }
             
             const defaultStoreId = defaultStore?.id || storeFilter
             
@@ -206,6 +219,10 @@ export function SalesReport() {
               .eq("store_id", storeFilter)
             
             const { data: updatedSales, error: updatedError } = await updatedSalesQuery
+            
+            if (updatedError) {
+              console.error("Debug - updated sales query error:", updatedError)
+            }
             
             if (!updatedError && updatedSales && updatedSales.length > 0) {
               // Use the updated sales
@@ -243,12 +260,24 @@ export function SalesReport() {
       const saleIds = sales.map((s) => s.id)
 
       // Fetch sale payments for sales made in the date range
-      const { data: salePayments, error: paymentsError } = await supabase
-        .from("sale_payments")
-        .select("sale_id, payment_method, amount")
-        .in("sale_id", saleIds)
+      // Batch the queries if there are many sale IDs to avoid URL length issues
+      let salePayments: any[] = []
+      const batchSize = 100
+      
+      for (let i = 0; i < saleIds.length; i += batchSize) {
+        const batch = saleIds.slice(i, i + batchSize)
+        const { data: batchPayments, error: paymentsError } = await supabase
+          .from("sale_payments")
+          .select("sale_id, payment_method, amount")
+          .in("sale_id", batch)
 
-      if (paymentsError) throw paymentsError
+        if (paymentsError) {
+          console.error("Sale payments error:", paymentsError)
+          throw new Error(`Sale payments query failed: ${paymentsError?.message || JSON.stringify(paymentsError)}`)
+        }
+        
+        salePayments = salePayments.concat(batchPayments || [])
+      }
 
       // Fetch credit payments (customer_payments) made in the date range
       // Now that customer_payments has store_id, we can filter directly by store
@@ -266,7 +295,10 @@ export function SalesReport() {
       }
 
       const { data: creditPaymentsData, error: creditPaymentsError } = await creditPaymentsQuery
-      if (creditPaymentsError) throw creditPaymentsError
+      if (creditPaymentsError) {
+        console.error("Credit payments error:", creditPaymentsError)
+        throw new Error(`Credit payments query failed: ${creditPaymentsError?.message || JSON.stringify(creditPaymentsError)}`)
+      }
       creditPayments = creditPaymentsData || []
       
       // Get customer IDs for credit sales filtering (still needed for credit sales query)
@@ -277,7 +309,10 @@ export function SalesReport() {
           .select("id")
           .eq("store_id", storeFilter)
         
-        if (customersError) throw customersError
+        if (customersError) {
+          console.error("Customers query error:", customersError)
+          throw new Error(`Customers query failed: ${customersError?.message || JSON.stringify(customersError)}`)
+        }
         customerIdsForStore = customersInStore?.map(c => c.id) || []
       }
 
@@ -301,7 +336,10 @@ export function SalesReport() {
         }
 
         const { data: allCreditSales, error: creditSalesError } = await creditSalesQuery
-        if (creditSalesError) throw creditSalesError
+        if (creditSalesError) {
+          console.error("Credit sales query error:", creditSalesError)
+          throw new Error(`Credit sales query failed: ${creditSalesError?.message || JSON.stringify(creditSalesError)}`)
+        }
 
         // For each customer, track payments chronologically to find which sales were cleared
         if (allCreditSales && allCreditSales.length > 0) {
@@ -319,7 +357,10 @@ export function SalesReport() {
 
           const { data: paymentsBeforeStart, error: paymentsBeforeError } = await paymentsBeforeQuery
 
-          if (paymentsBeforeError) throw paymentsBeforeError
+          if (paymentsBeforeError) {
+            console.error("Payments before start error:", paymentsBeforeError)
+            throw new Error(`Payments before start query failed: ${paymentsBeforeError?.message || JSON.stringify(paymentsBeforeError)}`)
+          }
 
           let paymentsUpToEndQuery = supabase
             .from("customer_payments")
@@ -333,7 +374,10 @@ export function SalesReport() {
 
           const { data: paymentsUpToEnd, error: paymentsUpToEndError } = await paymentsUpToEndQuery
 
-          if (paymentsUpToEndError) throw paymentsUpToEndError
+          if (paymentsUpToEndError) {
+            console.error("Payments up to end error:", paymentsUpToEndError)
+            throw new Error(`Payments up to end query failed: ${paymentsUpToEndError?.message || JSON.stringify(paymentsUpToEndError)}`)
+          }
 
           // Calculate total payments per customer before start and up to end
           const paymentsBeforeByCustomer = new Map<string, number>()
@@ -414,13 +458,20 @@ export function SalesReport() {
           // Fetch sale items for cleared credit sales
           if (clearedCreditSales.length > 0) {
             const clearedSaleIds = clearedCreditSales.map(s => s.id)
-            const { data: clearedItems, error: clearedItemsError } = await supabase
-              .from("sale_items")
-              .select("sale_id, product_id, product_name, quantity, total_amount, unit_price")
-              .in("sale_id", clearedSaleIds)
+            // Batch the queries if there are many sale IDs to avoid URL length issues
+            for (let i = 0; i < clearedSaleIds.length; i += batchSize) {
+              const batch = clearedSaleIds.slice(i, i + batchSize)
+              const { data: clearedItems, error: clearedItemsError } = await supabase
+                .from("sale_items")
+                .select("sale_id, product_id, product_name, quantity, total_amount, unit_price")
+                .in("sale_id", batch)
 
-            if (clearedItemsError) throw clearedItemsError
-            clearedCreditSaleItems = clearedItems || []
+              if (clearedItemsError) {
+                console.error("Cleared sale items query error:", clearedItemsError)
+                throw new Error(`Cleared sale items query failed: ${clearedItemsError?.message || JSON.stringify(clearedItemsError)}`)
+              }
+              clearedCreditSaleItems = clearedCreditSaleItems.concat(clearedItems || [])
+            }
           }
         }
       }
@@ -437,7 +488,10 @@ export function SalesReport() {
       }
 
       const { data: expenses, error: expensesError } = await expensesQuery
-      if (expensesError) throw expensesError
+      if (expensesError) {
+        console.error("Expenses query error:", expensesError)
+        throw new Error(`Expenses query failed: ${expensesError?.message || JSON.stringify(expensesError)}`)
+      }
 
       // Filter out unpaid credit sales from totals (only include fully paid credit sales)
       // Credit sales with payment_status "pending" or "partial" should not be counted until fully paid
@@ -464,13 +518,20 @@ export function SalesReport() {
       // Fetch sale items for filtered sales with unit_price
       let saleItems: any[] = []
       if (filteredSaleIds.length > 0) {
-        const { data, error: itemsError } = await supabase
-          .from("sale_items")
-          .select("sale_id, product_id, product_name, quantity, total_amount, unit_price")
-          .in("sale_id", filteredSaleIds)
+        // Batch the queries if there are many sale IDs to avoid URL length issues
+        for (let i = 0; i < filteredSaleIds.length; i += batchSize) {
+          const batch = filteredSaleIds.slice(i, i + batchSize)
+          const { data, error: itemsError } = await supabase
+            .from("sale_items")
+            .select("sale_id, product_id, product_name, quantity, total_amount, unit_price")
+            .in("sale_id", batch)
 
-        if (itemsError) throw itemsError
-        saleItems = data || []
+          if (itemsError) {
+            console.error("Sale items query error:", itemsError)
+            throw new Error(`Sale items query failed: ${itemsError?.message || JSON.stringify(itemsError)}`)
+          }
+          saleItems = saleItems.concat(data || [])
+        }
       }
 
       // Get unique product IDs to fetch cost prices
@@ -484,7 +545,10 @@ export function SalesReport() {
           .select("id, cost_price")
           .in("id", productIds)
         
-        if (productsError) throw productsError
+        if (productsError) {
+          console.error("Products query error:", productsError)
+          throw new Error(`Products query failed: ${productsError?.message || JSON.stringify(productsError)}`)
+        }
         productsWithCost = products || []
       }
 
@@ -604,7 +668,10 @@ export function SalesReport() {
           .select("id, cost_price")
           .in("id", newProductIds)
         
-        if (newProductsError) throw newProductsError
+        if (newProductsError) {
+          console.error("New products query error:", newProductsError)
+          throw new Error(`New products query failed: ${newProductsError?.message || JSON.stringify(newProductsError)}`)
+        }
         newProducts?.forEach(product => {
           costPriceMap.set(product.id, Number(product.cost_price || 0))
         })
@@ -645,7 +712,17 @@ export function SalesReport() {
       setTotalExpenses(totalExpensesCalc)
     } catch (error) {
       console.error("Error fetching report data:", error)
-      alert(`Error loading report: ${error instanceof Error ? error.message : "Unknown error"}`)
+      let errorMessage = "Unknown error"
+      
+      if (error instanceof Error) {
+        errorMessage = error.message
+      } else if (typeof error === "object" && error !== null) {
+        errorMessage = JSON.stringify(error)
+      } else if (typeof error === "string") {
+        errorMessage = error
+      }
+      
+      alert(`Error loading report: ${errorMessage}`)
     } finally {
       setIsLoading(false)
     }

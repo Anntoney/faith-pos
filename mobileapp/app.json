@@ -1,13 +1,11 @@
 {
   "expo": {
-    "name": "POS Admin",
-    "slug": "pos-admin-mobile",
+    "name": "Admin Mobile App",
+    "slug": "admin-mobile-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -16,33 +14,25 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.pos.admin"
+      "bundleIdentifier": "com.yourcompany.adminapp"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.pos.admin",
-      "versionCode": 1,
-      "permissions": []
+      "package": "com.yourcompany.adminapp",
+      "usesCleartextTraffic": true
     },
     "web": {
-      "favicon": "./assets/favicon.png",
       "bundler": "metro"
     },
-    "scheme": "pos-admin",
-    "plugins": [
-      "expo-router",
-      "expo-font"
-    ],
     "extra": {
-      "router": {
-        "origin": false
-      },
       "eas": {
-        "projectId": "21e65b87-6bf3-406a-9ee8-2b63a083f2f0"
-      }
+        "projectId": "b2372b2b-d6f5-4d2f-9b0d-5a8cac0dc9bb"
+      },
+      "EXPO_PUBLIC_SUPABASE_URL": "https://soqxolezaulotushohjd.supabase.co",
+      "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNvcXhvbGV6YXVsb3R1c2hvaGpkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyMzQ1MzMsImV4cCI6MjA4NTgxMDUzM30.MYPA-5QyUxdgfwMYJiJwN23CNMe1SU5hEWYu4kZUZuU",
+      "EXPO_PUBLIC_API_URL": "http://108.181.203.106:3001"
     }
   }
 }
