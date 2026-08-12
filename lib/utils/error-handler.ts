@@ -1,50 +1,48 @@
 /**
  * Global error handler for Supabase auth errors
  * This prevents unhandled promise rejections from cluttering logs
+ *
+ * Guarded so HMR / Turbopack re-imports of layout don't stack listeners
+ * (MaxListenersExceededWarning on process).
  */
 
-if (typeof process !== "undefined") {
-  // Handle unhandled promise rejections (common with Supabase auth errors)
-  process.on("unhandledRejection", (reason: any, promise) => {
-    // Check if it's a Supabase auth error
-    const errorMessage = reason?.message?.toLowerCase() || ""
-    const errorCode = reason?.code || ""
-    const errorName = reason?.name || ""
+const GLOBAL_FLAG = "__faithPosErrorHandlersRegistered__"
 
+declare global {
+  // eslint-disable-next-line no-var
+  var __faithPosErrorHandlersRegistered__: boolean | undefined
+}
+
+function isAuthRefreshError(error: any): boolean {
+  const errorMessage = error?.message?.toLowerCase() || ""
+  const errorCode = error?.code || ""
+  const errorName = error?.name || ""
+
+  return (
+    errorName === "AuthApiError" &&
+    (errorMessage.includes("refresh_token_not_found") ||
+      errorMessage.includes("invalid refresh token") ||
+      errorCode === "refresh_token_not_found")
+  )
+}
+
+if (typeof process !== "undefined" && !globalThis[GLOBAL_FLAG]) {
+  globalThis[GLOBAL_FLAG] = true
+
+  process.on("unhandledRejection", (reason: any) => {
     // Suppress refresh_token_not_found errors - they're handled by proxy
-    if (
-      errorName === "AuthApiError" &&
-      (errorMessage.includes("refresh_token_not_found") ||
-        errorMessage.includes("invalid refresh token") ||
-        errorCode === "refresh_token_not_found")
-    ) {
-      // Silently handle - these are expected when tokens expire
-      // The proxy will handle clearing cookies and redirecting
+    if (isAuthRefreshError(reason)) {
       return
     }
 
-    // Log other unhandled rejections
     console.error("Unhandled Rejection:", reason)
   })
 
-  // Handle uncaught exceptions
   process.on("uncaughtException", (error: any) => {
-    const errorMessage = error?.message?.toLowerCase() || ""
-    const errorCode = error?.code || ""
-    const errorName = error?.name || ""
-
-    // Suppress refresh_token_not_found errors
-    if (
-      errorName === "AuthApiError" &&
-      (errorMessage.includes("refresh_token_not_found") ||
-        errorMessage.includes("invalid refresh token") ||
-        errorCode === "refresh_token_not_found")
-    ) {
-      // Silently handle - these are expected when tokens expire
+    if (isAuthRefreshError(error)) {
       return
     }
 
-    // Log other uncaught exceptions
     console.error("Uncaught Exception:", error)
   })
 }

@@ -21,7 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Minus, Plus, Trash2, AlertCircle, X, ShoppingCart } from "lucide-react"
+import { Minus, Plus, Trash2, AlertCircle, X, ShoppingCart, Edit } from "lucide-react"
 import { LoadingDialog } from "@/components/ui/loading-dialog"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
