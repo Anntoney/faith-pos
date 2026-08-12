@@ -18,11 +18,21 @@ import { Textarea } from "@/components/ui/textarea"
 type ProductStock = {
   id: string
   name: string
-  sku: string
+  sku?: string | null
   stock_quantity: number
-  min_stock_level: number
-  categories: { name: string } | null
+  store_id?: string | null
+  min_stock_level?: number
+  categories?: { name: string } | null
   units: { short_name: string } | null
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === "string" && message.trim()) return message
+  }
+  return "An error occurred"
 }
 
 interface QuickStockAdjustDialogProps {
@@ -100,17 +110,23 @@ export function QuickStockAdjustDialog({
         quantity: adjustmentQty,
         reason: reason || null,
         created_by: user.id,
+        store_id: product.store_id || null,
       })
 
       if (adjustmentError) throw adjustmentError
 
       // Update product stock quantity
-      const { error: updateError } = await supabase
+      const { data: updatedProduct, error: updateError } = await supabase
         .from("products")
         .update({ stock_quantity: newQuantity })
         .eq("id", product.id)
+        .select("id")
+        .maybeSingle()
 
       if (updateError) throw updateError
+      if (!updatedProduct) {
+        throw new Error("Stock update was blocked. Please refresh and try again.")
+      }
 
       // Close dialog and refresh to show updated stock
       onClose()
@@ -119,7 +135,8 @@ export function QuickStockAdjustDialog({
         router.refresh()
       }, 100)
     } catch (error: unknown) {
-      setError(error instanceof Error ? error.message : "An error occurred")
+      console.error("Stock adjustment failed:", error)
+      setError(getErrorMessage(error))
       setIsLoading(false)
     }
   }
@@ -132,7 +149,8 @@ export function QuickStockAdjustDialog({
             {adjustmentType === "add" ? "Add" : "Subtract"} Stock - {product.name}
           </DialogTitle>
           <DialogDescription>
-            Quick stock adjustment for {product.name} ({product.sku})
+            Quick stock adjustment for {product.name}
+            {product.sku ? ` (${product.sku})` : ""}
           </DialogDescription>
         </DialogHeader>
 

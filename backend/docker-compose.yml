@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  whatsapp-agent:
+    build: .
+    container_name: whatsapp-ai-agent
+    ports:
+      - "3001:3001"
+    environment:
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_WHATSAPP_NUMBER=${TWILIO_WHATSAPP_NUMBER}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - OWNER_WHATSAPP_NUMBER=${OWNER_WHATSAPP_NUMBER}
+      - PORT=3001
+    restart: unless-stopped
+    networks:
+      - whatsapp-network
+    volumes:
+      - ./logs:/app/logs
+
+networks:
+  whatsapp-network:
+    driver: bridge

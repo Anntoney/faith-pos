@@ -5,6 +5,10 @@
       "dom.iterable",
       "esnext"
     ],
+    "types": [
+      "jest",
+      "node"
+    ],
     "allowJs": true,
     "target": "ES6",
     "skipLibCheck": true,

@@ -96,7 +96,14 @@ export function StockAdjustmentForm({ products }: { products: Product[] }) {
       // Force full page refresh to ensure all views are updated
       window.location.href = "/dashboard/stock"
     } catch (error: unknown) {
-      setError(error instanceof Error ? error.message : "An error occurred")
+      const message =
+        error instanceof Error
+          ? error.message
+          : typeof error === "object" && error !== null && "message" in error
+            ? String((error as { message: unknown }).message)
+            : "An error occurred"
+      console.error("Stock adjustment failed:", error)
+      setError(message)
       setIsLoading(false)
     }
   }

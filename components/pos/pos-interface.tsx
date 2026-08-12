@@ -1,18 +1,32 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { Minus, Plus, ShoppingCart, Trash2, AlertCircle, X, Edit } from "lucide-react"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Minus, Plus, Trash2, AlertCircle, X, ShoppingCart } from "lucide-react"
 import { LoadingDialog } from "@/components/ui/loading-dialog"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import { getDefaultCurrency, formatCurrency, type Currency } from "@/lib/utils/currency"
+import { MpesaPaymentModal } from "@/app/pos/components/MpesaPayment"
 
 type Product = {
   id: string
@@ -22,6 +36,7 @@ type Product = {
   selling_price: number
   wholesale_price?: number | null
   stock_quantity: number
+  reorder_point: number
   tax_rate: number
   categories: { name: string } | null
   units: { short_name: string } | null
@@ -37,7 +52,7 @@ type Customer = {
 type CartItem = {
   product: Product
   quantity: number
-  customPrice?: number // Custom selling price if edited
+  customPrice?: number
 }
 
 type Store = {
@@ -67,27 +82,38 @@ export function POSInterface({
   const [isProcessing, setIsProcessing] = useState(false)
   const [currency, setCurrency] = useState<Currency | null>(null)
   const router = useRouter()
+  const searchInputRef = useRef<HTMLInputElement>(null)
   
-  // Store selection for admins
   const [selectedStoreId, setSelectedStoreId] = useState<string | null>(userStoreId || null)
   const [products, setProducts] = useState<Product[]>(initialProducts)
   const [customers, setCustomers] = useState<Customer[]>(initialCustomers)
   const [isLoadingStores, setIsLoadingStores] = useState(false)
   const [isLoadingProducts, setIsLoadingProducts] = useState(false)
-  
-  // Price editing dialog state
+  const [selectedCategory, setSelectedCategory] = useState<string>("all")
+  const [paymentMethod, setPaymentMethod] = useState<"mobile" | "cash" | "card">("cash")
+  const [isSplit, setIsSplit] = useState(false)
+  const [splitAmounts, setSplitAmounts] = useState<{ method: string; amount: string }[]>([])
+  const [payments, setPayments] = useState<{ method: string; amount: string }[]>([
+    { method: "cash", amount: "" },
+  ])
+  const [defaultPaymentMethod, setDefaultPaymentMethod] = useState("cash")
   const [priceDialogOpen, setPriceDialogOpen] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
-  const [editedPrice, setEditedPrice] = useState<string>("")
-  const [priceError, setPriceError] = useState<string>("")
+  const [editedPrice, setEditedPrice] = useState("")
+  const [priceError, setPriceError] = useState("")
+  const [mpesaModalOpen, setMpesaModalOpen] = useState(false)
+  const [mpesaTransactionId, setMpesaTransactionId] = useState("")
+  const [mpesaConfirmedPaymentId, setMpesaConfirmedPaymentId] = useState<string | null>(null)
+  const [isOffline, setIsOffline] = useState(false)
+  const searchTimeoutRef = useRef<NodeJS.Timeout>()
+  const pendingCheckoutRef = useRef(false)
 
-  type PaymentEntry = {
-    method: string
-    amount: string
-  }
-
-  const [payments, setPayments] = useState<PaymentEntry[]>([{ method: "cash", amount: "" }])
-  const [defaultPaymentMethod, setDefaultPaymentMethod] = useState("cash")
+  useEffect(() => {
+    fetch("/api/system/status")
+      .then((r) => r.json())
+      .then((data) => setIsOffline(Boolean(data.offline_mode)))
+      .catch(() => setIsOffline(false))
+  }, [])
 
   useEffect(() => {
     getDefaultCurrency().then(setCurrency)
@@ -330,7 +356,7 @@ export function POSInterface({
     }
   }
 
-  const handleCheckout = async () => {
+  const handleCheckout = async (confirmedMpesaPaymentId?: string | null) => {
     if (cart.length === 0) {
       alert("Cart is empty")
       return
@@ -340,6 +366,7 @@ export function POSInterface({
     const totalPaid = calculateTotalPaid()
     const hasCreditPayment = payments.some((p) => p.method === "credit")
     const isWalkInCustomer = !selectedCustomer || selectedCustomer === ""
+    const resolvedMpesaPaymentId = confirmedMpesaPaymentId ?? mpesaConfirmedPaymentId
     
     // Validate payment amounts
     for (const payment of payments) {
@@ -369,6 +396,26 @@ export function POSInterface({
       }
     }
 
+    const saleStoreId = canAccessAllStores ? selectedStoreId : userStoreId
+    if (!saleStoreId) {
+      alert("Store information is missing. Please select a store.")
+      return
+    }
+
+    // M-Pesa / mobile money: collect STK confirmation before recording the sale
+    const hasMpesaPayment = payments.some(
+      (p) => p.method === "mpesa" || p.method === "mobile_money",
+    )
+    if (hasMpesaPayment && !resolvedMpesaPaymentId) {
+      if (isOffline) {
+        alert("System is offline. M-Pesa payments will be queued when you retry.")
+      }
+      setMpesaTransactionId(crypto.randomUUID())
+      pendingCheckoutRef.current = true
+      setMpesaModalOpen(true)
+      return
+    }
+
     setIsProcessing(true)
 
     const supabase = createClient()
@@ -390,16 +437,9 @@ export function POSInterface({
       }
 
       // Use first payment method as primary for backward compatibility
-      const primaryPaymentMethod = payments[0]?.method || "cash"
-
-      // Determine store_id: for admins use selectedStoreId, for others use userStoreId
-      const saleStoreId = canAccessAllStores ? selectedStoreId : userStoreId
-      
-      if (!saleStoreId) {
-        alert("Store information is missing. Please select a store.")
-        setIsProcessing(false)
-        return
-      }
+      const primaryPaymentMethod = hasMpesaPayment
+        ? "mpesa"
+        : payments[0]?.method || "cash"
 
       const { data: sale, error: saleError } = await supabase
         .from("sales")
@@ -415,6 +455,12 @@ export function POSInterface({
           payment_status: payStatus,
           amount_paid: actualPaid,
           created_by: userId,
+          ...(resolvedMpesaPaymentId
+            ? {
+                payment_id: resolvedMpesaPaymentId,
+                paid_at: new Date().toISOString(),
+              }
+            : {}),
         })
         .select()
         .single()
@@ -497,6 +543,8 @@ export function POSInterface({
       setSelectedCustomer("")
       setPayments([{ method: "cash", amount: "" }])
       setDiscount("0")
+      setMpesaConfirmedPaymentId(null)
+      setMpesaTransactionId("")
       router.refresh()
     } catch (error: unknown) {
       alert(`Error processing sale: ${error instanceof Error ? error.message : "Unknown error"}`)
@@ -510,6 +558,34 @@ export function POSInterface({
       <LoadingDialog isOpen={isProcessing} message="Processing sale..." />
       <LoadingDialog isOpen={isLoadingStores} message="Loading shops..." />
       <LoadingDialog isOpen={isLoadingProducts} message="Loading products..." />
+      {isOffline && (
+        <div className="mx-4 mt-4 rounded-md border border-amber-400 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          System Offline — Payments will be processed when online
+        </div>
+      )}
+      <MpesaPaymentModal
+        isOpen={mpesaModalOpen}
+        transactionId={mpesaTransactionId}
+        amount={Math.min(calculateTotalPaid() || calculateTotal(), calculateTotal())}
+        storeId={(canAccessAllStores ? selectedStoreId : userStoreId) || ""}
+        customerId={selectedCustomer || null}
+        onClose={() => {
+          setMpesaModalOpen(false)
+          pendingCheckoutRef.current = false
+        }}
+        onSuccess={(paymentData) => {
+          const paymentId = String(paymentData.paymentId || "")
+          setMpesaConfirmedPaymentId(paymentId)
+          setMpesaModalOpen(false)
+          // Complete sale with confirmed M-Pesa payment
+          void handleCheckout(paymentId)
+        }}
+        onSelectAlternative={() => {
+          setMpesaModalOpen(false)
+          pendingCheckoutRef.current = false
+          setPayments([{ method: "cash", amount: calculateTotal().toFixed(2) }])
+        }}
+      />
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-4 md:p-6">
       <div className="lg:col-span-2 space-y-4">
         {canAccessAllStores && stores.length > 0 && (
@@ -779,6 +855,9 @@ export function POSInterface({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="mpesa" disabled={isOffline}>
+                      M-Pesa{isOffline ? " (Offline)" : ""}
+                    </SelectItem>
                     <SelectItem value="mobile_money">Mobile Money</SelectItem>
                     <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
                             {selectedCustomer && <SelectItem value="credit">Credit</SelectItem>}
