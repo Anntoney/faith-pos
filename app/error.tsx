@@ -96,18 +96,16 @@ export default function Error({ error, reset }: ErrorBoundaryProps) {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {process.env.NODE_ENV === "development" && (
-              <div className="p-3 bg-muted rounded-md">
-                <p className="text-sm font-mono text-muted-foreground break-all">
-                  {error.message || "Unknown error"}
+            <div className="p-3 bg-muted rounded-md">
+              <p className="text-sm font-mono text-muted-foreground break-all">
+                {error.message || "Unknown error"}
+              </p>
+              {error.digest && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Error ID: {error.digest}
                 </p>
-                {error.digest && (
-                  <p className="text-xs text-muted-foreground mt-2">
-                    Error ID: {error.digest}
-                  </p>
-                )}
-              </div>
-            )}
+              )}
+            </div>
             <p className="text-sm text-muted-foreground">
               {isAuthError
                 ? "Your authentication session is no longer valid. Click the button below to clear your session and sign in again."

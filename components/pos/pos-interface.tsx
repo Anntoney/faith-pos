@@ -75,7 +75,7 @@ export function POSInterface({
   userStoreId?: string | null
 }) {
   const [cart, setCart] = useState<CartItem[]>([])
-  const [selectedCustomer, setSelectedCustomer] = useState<string>("")
+  const [selectedCustomer, setSelectedCustomer] = useState<string>("none")
   const [searchTerm, setSearchTerm] = useState("")
   const [discount, setDiscount] = useState("0")
   const [isProcessing, setIsProcessing] = useState(false)
@@ -101,7 +101,10 @@ export function POSInterface({
   const [editedPrice, setEditedPrice] = useState("")
   const [priceError, setPriceError] = useState("")
   const [isOffline, setIsOffline] = useState(false)
-  const searchTimeoutRef = useRef<NodeJS.Timeout>()
+  const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
+
+  const resolvedCustomerId =
+    selectedCustomer && selectedCustomer !== "none" ? selectedCustomer : null
 
   useEffect(() => {
     fetch("/api/system/status")
@@ -356,6 +359,16 @@ export function POSInterface({
   const normalizePaymentMethod = (method: string) =>
     method === "mpesa" ? "mobile_money" : method
 
+  const getSelectPaymentMethod = (method: string) => {
+    const normalized = normalizePaymentMethod(method)
+    // Credit option is only rendered when a customer is selected
+    if (normalized === "credit" && !resolvedCustomerId) return "cash"
+    if (!["cash", "mobile_money", "bank_transfer", "credit"].includes(normalized)) {
+      return "cash"
+    }
+    return normalized
+  }
+
   const handleCheckout = async () => {
     if (cart.length === 0) {
       alert("Cart is empty")
@@ -364,8 +377,8 @@ export function POSInterface({
 
     const total = calculateTotal()
     const totalPaid = calculateTotalPaid()
-    const hasCreditPayment = payments.some((p) => p.method === "credit")
-    const isWalkInCustomer = !selectedCustomer || selectedCustomer === ""
+    const hasCreditPayment = payments.some((p) => getSelectPaymentMethod(p.method) === "credit")
+    const isWalkInCustomer = !resolvedCustomerId
 
     // Validate payment amounts
     for (const payment of payments) {
@@ -389,7 +402,7 @@ export function POSInterface({
     }
 
     if (hasCreditPayment) {
-      if (!selectedCustomer) {
+      if (!resolvedCustomerId) {
         alert("Please select a customer for credit sales")
         return
       }
@@ -423,7 +436,7 @@ export function POSInterface({
 
       const normalizedPayments = payments.map((payment) => ({
         ...payment,
-        method: normalizePaymentMethod(payment.method),
+        method: getSelectPaymentMethod(payment.method),
       }))
 
       // Use first payment method as primary for backward compatibility
@@ -433,7 +446,7 @@ export function POSInterface({
         .from("sales")
         .insert({
           sale_number: saleNumber,
-          customer_id: selectedCustomer || null,
+          customer_id: resolvedCustomerId,
           store_id: saleStoreId,
           subtotal,
           tax_amount: taxAmount,
@@ -499,8 +512,8 @@ export function POSInterface({
 
       // Update customer balance if there's credit or partial payment
       // Note: If there's change (overpayment), don't increase customer balance
-      if (selectedCustomer && (hasCreditPayment || payStatus === "partial") && totalPaid <= total) {
-        const selectedCustomerData = customers.find((c) => c.id === selectedCustomer)
+      if (resolvedCustomerId && (hasCreditPayment || payStatus === "partial") && totalPaid <= total) {
+        const selectedCustomerData = customers.find((c) => c.id === resolvedCustomerId)
         const balanceIncrease = total - actualPaid
         if (balanceIncrease > 0) {
           const { error: balanceError } = await supabase
@@ -508,13 +521,13 @@ export function POSInterface({
             .update({
               balance: Number(selectedCustomerData?.balance || 0) + balanceIncrease,
             })
-            .eq("id", selectedCustomer)
+            .eq("id", resolvedCustomerId)
 
           if (balanceError) throw balanceError
 
           setCustomers((prev) =>
             prev.map((c) =>
-              c.id === selectedCustomer
+              c.id === resolvedCustomerId
                 ? { ...c, balance: Number(c.balance || 0) + balanceIncrease }
                 : c,
             ),
@@ -552,8 +565,8 @@ export function POSInterface({
       )
 
       setCart([])
-      setSelectedCustomer("")
-      setPayments([{ method: defaultPaymentMethod || "cash", amount: "" }])
+      setSelectedCustomer("none")
+      setPayments([{ method: getSelectPaymentMethod(defaultPaymentMethod || "cash"), amount: "" }])
       setDiscount("0")
       router.refresh()
     } catch (error: unknown) {
@@ -578,7 +591,10 @@ export function POSInterface({
         {canAccessAllStores && stores.length > 0 && (
           <div className="space-y-2">
             <Label htmlFor="storeSelect">Select Store *</Label>
-            <Select value={selectedStoreId || ""} onValueChange={setSelectedStoreId}>
+            <Select
+              value={selectedStoreId ?? undefined}
+              onValueChange={setSelectedStoreId}
+            >
               <SelectTrigger id="storeSelect" className="h-12 text-lg">
                 <SelectValue placeholder="Select a store to search products" />
               </SelectTrigger>
@@ -785,7 +801,20 @@ export function POSInterface({
                 <Label htmlFor="customer" className="text-sm font-medium">
                   Customer (Optional)
                 </Label>
-                <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
+                <Select
+                  value={selectedCustomer || "none"}
+                  onValueChange={(value) => {
+                    setSelectedCustomer(value)
+                    // Drop credit payments if switching back to walk-in
+                    if (value === "none") {
+                      setPayments((prev) =>
+                        prev.map((p) =>
+                          p.method === "credit" ? { ...p, method: "cash" } : p,
+                        ),
+                      )
+                    }
+                  }}
+                >
                   <SelectTrigger id="customer" className="h-11 text-base">
                     <SelectValue placeholder="Walk-in Customer" />
                   </SelectTrigger>
@@ -800,17 +829,17 @@ export function POSInterface({
                 </Select>
               </div>
 
-              {customers.find((c) => c.id === selectedCustomer) && (
+              {resolvedCustomerId && customers.find((c) => c.id === resolvedCustomerId) && (
                 <div className="bg-muted p-4 rounded-md text-sm space-y-2">
                   <div className="flex justify-between">
                     <span>Current Balance:</span>
                     <span className="font-medium">
                       {currency
                         ? formatCurrency(
-                            Number(customers.find((c) => c.id === selectedCustomer)?.balance || 0),
+                            Number(customers.find((c) => c.id === resolvedCustomerId)?.balance || 0),
                             currency,
                           )
-                        : `$${Number(customers.find((c) => c.id === selectedCustomer)?.balance || 0).toFixed(2)}`}
+                        : `$${Number(customers.find((c) => c.id === resolvedCustomerId)?.balance || 0).toFixed(2)}`}
                     </span>
                   </div>
                 </div>
@@ -834,7 +863,7 @@ export function POSInterface({
                     <div key={index} className="flex gap-2 items-start">
                       <div className="flex-1 space-y-2">
                         <Select
-                          value={payment.method}
+                          value={getSelectPaymentMethod(payment.method)}
                           onValueChange={(value) => updatePayment(index, "method", value)}
                         >
                           <SelectTrigger className="h-11 text-base">
@@ -844,7 +873,7 @@ export function POSInterface({
                     <SelectItem value="cash">Cash</SelectItem>
                     <SelectItem value="mobile_money">Mobile Money</SelectItem>
                     <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
-                    {selectedCustomer && <SelectItem value="credit">Credit</SelectItem>}
+                    {resolvedCustomerId && <SelectItem value="credit">Credit</SelectItem>}
                   </SelectContent>
                 </Select>
                   <Input
@@ -913,7 +942,7 @@ export function POSInterface({
                     </span>
                   </div>
                 )}
-                {getRemainingBalance() > 0 && selectedCustomer && (
+                {getRemainingBalance() > 0 && resolvedCustomerId && (
                   <p className="text-sm text-amber-600 flex items-center gap-1">
                     <AlertCircle className="h-4 w-4" />
                     Balance will be added to customer credit
