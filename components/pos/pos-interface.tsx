@@ -26,7 +26,6 @@ import { LoadingDialog } from "@/components/ui/loading-dialog"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import { getDefaultCurrency, formatCurrency, type Currency } from "@/lib/utils/currency"
-import { MpesaPaymentModal } from "@/app/pos/components/MpesaPayment"
 
 type Product = {
   id: string
@@ -101,12 +100,8 @@ export function POSInterface({
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [editedPrice, setEditedPrice] = useState("")
   const [priceError, setPriceError] = useState("")
-  const [mpesaModalOpen, setMpesaModalOpen] = useState(false)
-  const [mpesaTransactionId, setMpesaTransactionId] = useState("")
-  const [mpesaConfirmedPaymentId, setMpesaConfirmedPaymentId] = useState<string | null>(null)
   const [isOffline, setIsOffline] = useState(false)
   const searchTimeoutRef = useRef<NodeJS.Timeout>()
-  const pendingCheckoutRef = useRef(false)
 
   useEffect(() => {
     fetch("/api/system/status")
@@ -178,8 +173,10 @@ export function POSInterface({
         .single()
 
       if (data?.setting_value) {
-        setDefaultPaymentMethod(data.setting_value)
-        setPayments([{ method: data.setting_value, amount: "" }])
+        // Legacy "mpesa" setting maps to direct mobile money (no STK dialog)
+        const method = data.setting_value === "mpesa" ? "mobile_money" : data.setting_value
+        setDefaultPaymentMethod(method)
+        setPayments([{ method, amount: "" }])
       }
     } catch (error) {
       console.error("Error loading default payment method:", error)
@@ -356,7 +353,10 @@ export function POSInterface({
     }
   }
 
-  const handleCheckout = async (confirmedMpesaPaymentId?: string | null) => {
+  const normalizePaymentMethod = (method: string) =>
+    method === "mpesa" ? "mobile_money" : method
+
+  const handleCheckout = async () => {
     if (cart.length === 0) {
       alert("Cart is empty")
       return
@@ -366,8 +366,7 @@ export function POSInterface({
     const totalPaid = calculateTotalPaid()
     const hasCreditPayment = payments.some((p) => p.method === "credit")
     const isWalkInCustomer = !selectedCustomer || selectedCustomer === ""
-    const resolvedMpesaPaymentId = confirmedMpesaPaymentId ?? mpesaConfirmedPaymentId
-    
+
     // Validate payment amounts
     for (const payment of payments) {
       const amount = Number.parseFloat(payment.amount) || 0
@@ -388,7 +387,7 @@ export function POSInterface({
         return
       }
     }
-    
+
     if (hasCreditPayment) {
       if (!selectedCustomer) {
         alert("Please select a customer for credit sales")
@@ -399,20 +398,6 @@ export function POSInterface({
     const saleStoreId = canAccessAllStores ? selectedStoreId : userStoreId
     if (!saleStoreId) {
       alert("Store information is missing. Please select a store.")
-      return
-    }
-
-    // M-Pesa / mobile money: collect STK confirmation before recording the sale
-    const hasMpesaPayment = payments.some(
-      (p) => p.method === "mpesa" || p.method === "mobile_money",
-    )
-    if (hasMpesaPayment && !resolvedMpesaPaymentId) {
-      if (isOffline) {
-        alert("System is offline. M-Pesa payments will be queued when you retry.")
-      }
-      setMpesaTransactionId(crypto.randomUUID())
-      pendingCheckoutRef.current = true
-      setMpesaModalOpen(true)
       return
     }
 
@@ -433,13 +418,16 @@ export function POSInterface({
       if (actualPaid === 0 && hasCreditPayment) {
         payStatus = "pending"
       } else if (actualPaid < total) {
-          payStatus = "partial"
+        payStatus = "partial"
       }
 
+      const normalizedPayments = payments.map((payment) => ({
+        ...payment,
+        method: normalizePaymentMethod(payment.method),
+      }))
+
       // Use first payment method as primary for backward compatibility
-      const primaryPaymentMethod = hasMpesaPayment
-        ? "mpesa"
-        : payments[0]?.method || "cash"
+      const primaryPaymentMethod = normalizedPayments[0]?.method || "cash"
 
       const { data: sale, error: saleError } = await supabase
         .from("sales")
@@ -455,12 +443,6 @@ export function POSInterface({
           payment_status: payStatus,
           amount_paid: actualPaid,
           created_by: userId,
-          ...(resolvedMpesaPaymentId
-            ? {
-                payment_id: resolvedMpesaPaymentId,
-                paid_at: new Date().toISOString(),
-              }
-            : {}),
         })
         .select()
         .single()
@@ -486,7 +468,10 @@ export function POSInterface({
 
         if (itemError) throw itemError
 
-        const newStock = item.product.stock_quantity - item.quantity
+        const currentStock =
+          products.find((p) => p.id === item.product.id)?.stock_quantity ??
+          item.product.stock_quantity
+        const newStock = currentStock - item.quantity
         const { error: stockError } = await supabase
           .from("products")
           .update({ stock_quantity: newStock })
@@ -497,7 +482,7 @@ export function POSInterface({
 
       // Insert sale payments - record all payments as entered
       // The change (if any) is calculated as total payments - sale total
-      for (const payment of payments) {
+      for (const payment of normalizedPayments) {
         const amount = Number.parseFloat(payment.amount) || 0
         if (amount > 0) {
           const { error: paymentError } = await supabase
@@ -518,14 +503,22 @@ export function POSInterface({
         const selectedCustomerData = customers.find((c) => c.id === selectedCustomer)
         const balanceIncrease = total - actualPaid
         if (balanceIncrease > 0) {
-        const { error: balanceError } = await supabase
-          .from("customers")
-          .update({
-            balance: Number(selectedCustomerData?.balance || 0) + balanceIncrease,
-          })
-          .eq("id", selectedCustomer)
+          const { error: balanceError } = await supabase
+            .from("customers")
+            .update({
+              balance: Number(selectedCustomerData?.balance || 0) + balanceIncrease,
+            })
+            .eq("id", selectedCustomer)
 
-        if (balanceError) throw balanceError
+          if (balanceError) throw balanceError
+
+          setCustomers((prev) =>
+            prev.map((c) =>
+              c.id === selectedCustomer
+                ? { ...c, balance: Number(c.balance || 0) + balanceIncrease }
+                : c,
+            ),
+          )
         }
       }
 
@@ -539,12 +532,29 @@ export function POSInterface({
         alert(`Sale completed successfully! Sale #${saleNumber}`)
       }
 
+      // Reflect sold quantities on product cards without requiring a full page refresh
+      const soldQuantities = new Map<string, number>()
+      for (const item of cart) {
+        soldQuantities.set(
+          item.product.id,
+          (soldQuantities.get(item.product.id) || 0) + item.quantity,
+        )
+      }
+      setProducts((prev) =>
+        prev.map((product) => {
+          const qtySold = soldQuantities.get(product.id)
+          if (!qtySold) return product
+          return {
+            ...product,
+            stock_quantity: Math.max(0, product.stock_quantity - qtySold),
+          }
+        }),
+      )
+
       setCart([])
       setSelectedCustomer("")
-      setPayments([{ method: "cash", amount: "" }])
+      setPayments([{ method: defaultPaymentMethod || "cash", amount: "" }])
       setDiscount("0")
-      setMpesaConfirmedPaymentId(null)
-      setMpesaTransactionId("")
       router.refresh()
     } catch (error: unknown) {
       alert(`Error processing sale: ${error instanceof Error ? error.message : "Unknown error"}`)
@@ -563,29 +573,6 @@ export function POSInterface({
           System Offline — Payments will be processed when online
         </div>
       )}
-      <MpesaPaymentModal
-        isOpen={mpesaModalOpen}
-        transactionId={mpesaTransactionId}
-        amount={Math.min(calculateTotalPaid() || calculateTotal(), calculateTotal())}
-        storeId={(canAccessAllStores ? selectedStoreId : userStoreId) || ""}
-        customerId={selectedCustomer || null}
-        onClose={() => {
-          setMpesaModalOpen(false)
-          pendingCheckoutRef.current = false
-        }}
-        onSuccess={(paymentData) => {
-          const paymentId = String(paymentData.paymentId || "")
-          setMpesaConfirmedPaymentId(paymentId)
-          setMpesaModalOpen(false)
-          // Complete sale with confirmed M-Pesa payment
-          void handleCheckout(paymentId)
-        }}
-        onSelectAlternative={() => {
-          setMpesaModalOpen(false)
-          pendingCheckoutRef.current = false
-          setPayments([{ method: "cash", amount: calculateTotal().toFixed(2) }])
-        }}
-      />
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-4 md:p-6">
       <div className="lg:col-span-2 space-y-4">
         {canAccessAllStores && stores.length > 0 && (
@@ -855,12 +842,9 @@ export function POSInterface({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="mpesa" disabled={isOffline}>
-                      M-Pesa{isOffline ? " (Offline)" : ""}
-                    </SelectItem>
                     <SelectItem value="mobile_money">Mobile Money</SelectItem>
                     <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
-                            {selectedCustomer && <SelectItem value="credit">Credit</SelectItem>}
+                    {selectedCustomer && <SelectItem value="credit">Credit</SelectItem>}
                   </SelectContent>
                 </Select>
                   <Input
@@ -983,7 +967,7 @@ export function POSInterface({
               <Button
                 className="w-full h-12 text-base font-semibold"
                 size="lg"
-                onClick={handleCheckout}
+                onClick={() => void handleCheckout()}
                 disabled={
                   cart.length === 0 ||
                   isProcessing ||
