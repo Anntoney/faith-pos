@@ -1,7 +1,9 @@
 import { Header } from "@/components/dashboard/header"
+import { RevenueStatCard } from "@/components/dashboard/revenue-stat-card"
+import { REVENUE_RESET_SETTING_KEY } from "@/lib/constants/dashboard"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createClient } from "@/lib/supabase/server"
-import { DollarSign, Package, ShoppingCart, Users } from "lucide-react"
+import { Package, ShoppingCart, Users } from "lucide-react"
 import { getDefaultCurrencyServer } from "@/lib/utils/currency-server"
 import { formatCurrency } from "@/lib/utils/currency"
 import { PermissionGuard } from "@/components/dashboard/permission-guard"
@@ -25,6 +27,7 @@ function isCompletedSale(sale: SaleRow): boolean {
 
 async function getCompletedSalesTotals(
   supabase: Awaited<ReturnType<typeof createClient>>,
+  resetAt: string | null,
 ): Promise<{ totalRevenue: number; salesCount: number }> {
   const pageSize = 1000
   let offset = 0
@@ -33,10 +36,17 @@ async function getCompletedSalesTotals(
 
   // Paginate past Supabase's default 1,000-row cap so revenue matches the full sales count.
   while (true) {
-    const { data, error } = await supabase
+    let query = supabase
       .from("sales")
       .select("total_amount, amount_paid, payment_status")
+      .order("sale_date", { ascending: true })
       .range(offset, offset + pageSize - 1)
+
+    if (resetAt) {
+      query = query.gte("sale_date", resetAt)
+    }
+
+    const { data, error } = await query
 
     if (error) {
       console.error("Dashboard sales totals query error:", error)
@@ -66,10 +76,11 @@ export default async function DashboardPage() {
 
   const admin = user ? await isAdmin(user.id) : false
 
-  let stats: Array<{
+  let totalRevenueDisplay = ""
+  let otherStats: Array<{
     name: string
     value: string | number
-    icon: typeof DollarSign
+    icon: typeof Package
     color: string
     bgColor: string
     gradient: string
@@ -77,23 +88,25 @@ export default async function DashboardPage() {
 
   // Financial / inventory overview figures are admin-only
   if (admin) {
+    const { data: resetSetting } = await supabase
+      .from("system_settings")
+      .select("setting_value")
+      .eq("setting_key", REVENUE_RESET_SETTING_KEY)
+      .maybeSingle()
+
+    const resetAt = resetSetting?.setting_value || null
+
     const [{ count: productsCount }, { count: customersCount }, { totalRevenue, salesCount }, currency] =
       await Promise.all([
         supabase.from("products").select("*", { count: "exact", head: true }),
         supabase.from("customers").select("*", { count: "exact", head: true }),
-        getCompletedSalesTotals(supabase),
+        getCompletedSalesTotals(supabase, resetAt),
         getDefaultCurrencyServer(),
       ])
 
-    stats = [
-      {
-        name: "Total Revenue",
-        value: formatCurrency(totalRevenue, currency),
-        icon: DollarSign,
-        color: "text-primary",
-        bgColor: "bg-primary/10",
-        gradient: "from-primary/20 to-primary/5",
-      },
+    totalRevenueDisplay = formatCurrency(totalRevenue, currency)
+
+    otherStats = [
       {
         name: "Total Products",
         value: productsCount || 0,
@@ -128,7 +141,8 @@ export default async function DashboardPage() {
         <div className="p-6 space-y-6">
           {admin && (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-              {stats.map((stat) => (
+              <RevenueStatCard value={totalRevenueDisplay} />
+              {otherStats.map((stat) => (
                 <Card key={stat.name} className="hover-lift">
                   <CardHeader className="flex flex-row items-center justify-between pb-2">
                     <CardTitle className="text-sm font-medium text-muted-foreground">{stat.name}</CardTitle>
