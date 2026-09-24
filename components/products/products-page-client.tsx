@@ -5,7 +5,9 @@ import { ProductsValueCards } from "@/components/products/products-value-cards"
 import { ProductsTable } from "@/components/products/products-table"
 import { ProductsStoreSelector } from "@/components/products/products-store-selector"
 import { AddProductButton } from "@/components/products/add-product-button"
+import { DownloadProductsReport } from "@/components/products/download-report"
 import { LoadingDialog } from "@/components/ui/loading-dialog"
+import type { Currency } from "@/lib/utils/currency"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Search } from "lucide-react"
@@ -16,6 +18,7 @@ type Product = {
   name: string
   cost_price: number
   selling_price: number
+  wholesale_price?: number | null
   stock_quantity: number
   store_id: string | null
   categories?: { id: string; name: string } | null
@@ -32,12 +35,14 @@ export function ProductsPageClient({
   initialProducts,
   canAccessAllStores,
   userStoreId,
-  stores
+  stores,
+  currency,
 }: {
   initialProducts: Product[]
   canAccessAllStores: boolean
   userStoreId: string | null
   stores: Store[]
+  currency: Currency
 }) {
   const [selectedStoreId, setSelectedStoreId] = useState<string | null>(userStoreId || null)
   const [products, setProducts] = useState<Product[]>(initialProducts)
@@ -126,8 +131,15 @@ export function ProductsPageClient({
   return (
     <>
       <LoadingDialog isOpen={isLoadingProducts} message="Loading products..." />
-      <div className="flex justify-end mb-4">
-        <AddProductButton selectedStoreId={selectedStoreId} />
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-xl font-semibold">Manage Products</h2>
+          <p className="text-sm text-muted-foreground">Create and manage your product inventory</p>
+        </div>
+        <div className="flex gap-2">
+          <DownloadProductsReport products={filteredProducts} currency={currency} />
+          <AddProductButton selectedStoreId={selectedStoreId} />
+        </div>
       </div>
       <ProductsStoreSelector
         canAccessAllStores={canAccessAllStores}
